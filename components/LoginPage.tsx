@@ -116,7 +116,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ onAuthenticated }) => {
                   <input id="name" type="text" value={name} onChange={(e) => setName(e.target.value)} className="mt-1 block w-full bg-brand-med border border-brand-border rounded-md shadow-sm py-2 px-3 text-white focus:outline-none focus:ring-pink-500 focus:border-pink-500" required autoComplete="name" />
                 </div>
                 <div>
-                  <label htmlFor="whatsapp" className="block text-sm font-medium text-gray-400">WhatsApp Number (E.164 e.g. +254712345678)</label>
+                  <label htmlFor="whatsapp" className="block text-sm font-medium text-gray-400">WhatsApp Number (e.g. +254712345678)</label>
                   <input id="whatsapp" type="tel" value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} className="mt-1 block w-full bg-brand-med border border-brand-border rounded-md shadow-sm py-2 px-3 text-white focus:outline-none focus:ring-pink-500 focus:border-pink-500" required autoComplete="tel" />
                 </div>
               </>
@@ -148,3 +148,4 @@ const LoginPage: React.FC<LoginPageProps> = ({ onAuthenticated }) => {
 };
 
 export default LoginPage;
+
