@@ -50,28 +50,72 @@ const App: React.FC = () => {
     }
   }, [currentUser?.full_name]);
 
-  useEffect(() => {
-    const subscription = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (session?.user) {
-        const { user } = session;
-        const { data: profile } = await supabase.from('profiles').select('full_name, role').eq('id', user.id).single();
-        const mapped: CurrentUser = {
-          id: user.id,
-          full_name: profile?.full_name || user.email?.split('@')[0] || 'User',
-          email: user.email,
-          role: (profile?.role as 'user' | 'admin') || 'user'
-        };
-        setCurrentUser(mapped);
-        await loadMessages(user.id);
+  
+
+useEffect(() => {
+  let active = true;
+
+  const handleSession = async (session: any) => {
+    if (!session?.user) return;
+
+    try {
+      const { user } = session;
+
+      const { data: profile, error } = await supabase
+        .from('profiles')
+        .select('full_name, role')
+        .eq('id', user.id)
+        .maybeSingle();
+
+      if (!active) return;
+
+      if (error) {
+        console.error('Profile loading error:', error);
+      }
+
+      const mapped: CurrentUser = {
+        id: user.id,
+        full_name:
+          profile?.full_name ||
+          user.email?.split('@')[0] ||
+          'User',
+        email: user.email,
+        role: profile?.role === 'admin' ? 'admin' : 'user'
+      };
+
+      setCurrentUser(mapped);
+
+      await loadMessages(user.id);
+
+      if (active) {
         trackEvent('login');
+      }
+    } catch (error) {
+      console.error('Authentication initialization failed:', error);
+    }
+  };
+
+  const { data: { subscription } } =
+    supabase.auth.onAuthStateChange((event, session) => {
+
+      if (session?.user) {
+        // Run database operations after the auth callback returns.
+        setTimeout(() => {
+          if (active) void handleSession(session);
+        }, 0);
       } else {
         setCurrentUser(null);
         setMessages([welcomeMessage]);
+        setSourcesByMsgId({});
         chatRef.current = null;
       }
     });
-    return () => { subscription.data.subscription.unsubscribe(); };
-  }, []);
+
+  return () => {
+    active = false;
+    subscription.unsubscribe();
+  };
+}, []);
 
   useEffect(() => { if (currentUser?.role) initChat(); }, [currentUser, initChat]);
 
