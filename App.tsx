@@ -40,7 +40,7 @@ const App: React.FC = () => {
       if (!apiKey) throw new Error('API_KEY env variable not set.');
       const ai = new GoogleGenAI({ apiKey });
       const chatInstance = ai.chats.create({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.8-flash',
         config: { systemInstruction: getSystemInstruction(currentUser.full_name), tools: [{ googleSearch: {} }] }
       });
       chatRef.current = chatInstance;
