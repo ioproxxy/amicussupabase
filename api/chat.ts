@@ -1,198 +1,182 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { createClient } from '@supabase/supabase-js';
 
 export const config = {
-  api: {
-    bodyParser: {
-      sizeLimit: '64kb',
-    },
-  },
+  api: { bodyParser: { sizeLimit: '64kb' } },
 };
 
 const {
-  SUPABASE_URL,
-  SUPABASE_ANON_KEY,
   OLLAMA_BASE_URL,
   OLLAMA_MODEL,
   CF_ACCESS_CLIENT_ID,
   CF_ACCESS_CLIENT_SECRET,
 } = process.env;
 
+const ALLOWED_ORIGIN =
+  process.env.ALLOWED_ORIGIN ||
+  'https://amicussupabase-five.vercel.app';
+
+const buckets = new Map<string, { count: number; reset: number }>();
+
+function limited(ip: string): boolean {
+  const now = Date.now();
+  let bucket = buckets.get(ip);
+
+  if (!bucket || now > bucket.reset) {
+    buckets.set(ip, { count: 1, reset: now + 60000 });
+    return false;
+  }
+
+  bucket.count++;
+  return bucket.count > 10;
+}
+
 export default async function handler(
   req: VercelRequest,
   res: VercelResponse
 ) {
-  // Only accept POST requests
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
-    return res.status(405).json({
-      error: 'Method not allowed. Use POST.',
+    return res.status(405).json({ error: 'POST required.' });
+  }
+
+  const origin = req.headers.origin;
+  if (origin && origin !== ALLOWED_ORIGIN) {
+    return res.status(403).json({ error: 'Origin not allowed.' });
+  }
+
+  const forwarded = req.headers['x-forwarded-for'];
+  const ip = (Array.isArray(forwarded) ? forwarded[0] : forwarded)
+    ?.split(',')[0]?.trim() || 'unknown';
+
+  if (limited(ip)) {
+    res.setHeader('Retry-After', '60');
+    return res.status(429).json({ error: 'Too many requests.' });
+  }
+
+  if (
+    !OLLAMA_BASE_URL ||
+    !OLLAMA_MODEL ||
+    !CF_ACCESS_CLIENT_ID ||
+    !CF_ACCESS_CLIENT_SECRET
+  ) {
+    return res.status(500).json({
+      error: 'Server configuration incomplete.'
     });
   }
 
-  // Check required environment variables
-  const required = {
-    SUPABASE_URL,
-    SUPABASE_ANON_KEY,
-    OLLAMA_BASE_URL,
-    OLLAMA_MODEL,
-    CF_ACCESS_CLIENT_ID,
-    CF_ACCESS_CLIENT_SECRET,
-  };
-
-  const missing = Object.entries(required)
-    .filter(([, value]) => !value)
-    .map(([key]) => key);
-
-  if (missing.length > 0) {
+  if (!OLLAMA_BASE_URL.startsWith('https://')) {
     return res.status(500).json({
-      error: 'Server configuration is incomplete.',
-      missing,
-    });
-  }
-
-  // Validate Ollama URL
-  if (!OLLAMA_BASE_URL!.startsWith('https://')) {
-    return res.status(500).json({
-      error: 'OLLAMA_BASE_URL must use HTTPS.',
+      error: 'OLLAMA_BASE_URL must use HTTPS.'
     });
   }
 
   try {
-    // Validate Supabase JWT
-    const authHeader = req.headers.authorization;
-
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        error: 'Authorization token required.',
-      });
-    }
-
-    const token = authHeader.substring(7);
-
-    const supabase = createClient(
-      SUPABASE_URL!,
-      SUPABASE_ANON_KEY!
-    );
-
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser(token);
-
-    if (authError || !user) {
-      return res.status(401).json({
-        error: 'Invalid or expired authentication token.',
-      });
-    }
-
-    // Validate request body
     const {
       systemInstruction = '',
-      messages,
+      messages
     } = req.body ?? {};
 
     if (
       !Array.isArray(messages) ||
-      messages.length === 0 ||
-      messages.length > 50
+      messages.length < 1 ||
+      messages.length > 20
     ) {
       return res.status(400).json({
-        error: 'Messages must be an array containing 1–50 items.',
-      });
-    }
-
-    const validMessages = messages.map((message: any) => {
-      if (
-        !message ||
-        !['user', 'assistant'].includes(message.role) ||
-        typeof message.content !== 'string' ||
-        message.content.length > 16000
-      ) {
-        throw new Error('Invalid message format.');
-      }
-
-      return {
-        role: message.role,
-        content: message.content,
-      };
-    });
-
-    if (validMessages[validMessages.length - 1].role !== 'user') {
-      return res.status(400).json({
-        error: 'The last message must be from the user.',
+        error: 'Messages must contain 1–20 items.'
       });
     }
 
     if (
       typeof systemInstruction !== 'string' ||
-      systemInstruction.length > 12000
+      systemInstruction.length > 8000
     ) {
       return res.status(400).json({
-        error: 'Invalid system instruction.',
+        error: 'Invalid system instruction.'
       });
     }
 
-    // Connect to Ollama through Cloudflare Access
-    const ollamaUrl =
-      `${OLLAMA_BASE_URL!.replace(/\/+$/, '')}/api/chat`;
+    let total = systemInstruction.length;
 
-    const ollamaResponse = await fetch(ollamaUrl, {
+    const validMessages = messages.map((m: any) => {
+      if (
+        !m ||
+        !['user', 'assistant'].includes(m.role) ||
+        typeof m.content !== 'string' ||
+        m.content.length < 1 ||
+        m.content.length > 8000
+      ) {
+        throw new Error('Invalid message format.');
+      }
+
+      total += m.content.length;
+
+      return {
+        role: m.role,
+        content: m.content
+      };
+    });
+
+    if (total > 24000) {
+      return res.status(413).json({
+        error: 'Conversation too long.'
+      });
+    }
+
+    if (
+      validMessages[validMessages.length - 1].role !== 'user'
+    ) {
+      return res.status(400).json({
+        error: 'Last message must be from the user.'
+      });
+    }
+
+    const url =
+      `${OLLAMA_BASE_URL.replace(/\/+$/, '')}/api/chat`;
+
+    const upstream = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'CF-Access-Client-Id': CF_ACCESS_CLIENT_ID!,
-        'CF-Access-Client-Secret': CF_ACCESS_CLIENT_SECRET!,
+        'CF-Access-Client-Id': CF_ACCESS_CLIENT_ID,
+        'CF-Access-Client-Secret': CF_ACCESS_CLIENT_SECRET
       },
       body: JSON.stringify({
         model: OLLAMA_MODEL,
         stream: true,
         messages: [
-          {
-            role: 'system',
-            content: systemInstruction,
-          },
-          ...validMessages,
+          { role: 'system', content: systemInstruction },
+          ...validMessages
         ],
-      }),
+        options: { num_predict: 512 }
+      })
     });
 
-    if (!ollamaResponse.ok) {
-      const errorText = await ollamaResponse.text();
-
-      console.error(
-        'Ollama upstream error:',
-        ollamaResponse.status,
-        errorText
-      );
+    if (!upstream.ok) {
+      console.error('Ollama error:', upstream.status);
 
       return res.status(502).json({
-        error: 'Could not communicate with the Ollama server.',
-        upstreamStatus: ollamaResponse.status,
+        error: 'Could not communicate with Ollama.',
+        upstreamStatus: upstream.status
       });
     }
 
-    if (!ollamaResponse.body) {
+    if (!upstream.body) {
       return res.status(502).json({
-        error: 'Ollama returned an empty response.',
+        error: 'Empty Ollama response.'
       });
     }
 
-    // Stream Ollama response to the browser
     res.setHeader('Content-Type', 'application/x-ndjson');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
 
-    const reader = ollamaResponse.body.getReader();
+    const reader = upstream.body.getReader();
 
     try {
       while (true) {
         const { done, value } = await reader.read();
-
         if (done) break;
-
         res.write(Buffer.from(value));
       }
 
@@ -200,12 +184,13 @@ export default async function handler(
     } finally {
       reader.releaseLock();
     }
+
   } catch (error: any) {
     console.error('Amicus API error:', error);
 
     if (!res.headersSent) {
-      return res.status(500).json({
-        error: error.message || 'Internal server error.',
+      return res.status(400).json({
+        error: error.message || 'Invalid request.'
       });
     }
 
