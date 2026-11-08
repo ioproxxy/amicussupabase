@@ -148,7 +148,7 @@ const App: React.FC = () => {
     // Capture conversation history before adding the new message.
     const conversationHistory = messages
       .filter(m => m.id !== 'welcome-0' && m.content.trim())
-      .slice(-20)
+      .slice(-19)
       .map(m => ({
         role: m.role === Role.USER ? 'user' : 'assistant',
         content: m.content
